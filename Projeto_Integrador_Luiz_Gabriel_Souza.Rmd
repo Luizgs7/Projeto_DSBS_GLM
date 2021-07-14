@@ -1,0 +1,396 @@
+---
+title: "Projeto Integrador: Regressão Linear Múltipla"
+author: "Luiz Gabriel de Souza"
+date: "28/06/2021"
+output: 
+  html_document:
+    theme: flatly
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=8)
+setwd("C:/Users/Avell/Google Drive/Luiz Gabriel - PC/13.Pós Data Science UFPR/03.Modelos_Estatisticos/Modulo_01/Projeto Integrador")
+```
+<hr>
+
+Este projeto tem como objetivo, atráves de uma regressão multipla, entender a demanda de energia gasta para aquecer prédios (construções de forma geral) como uma função de características dos prédio.
+
+<hr>
+
+# Analise exploratória
+
+## Importação da base de dados e renomeação de colunas
+```{r warning=FALSE}
+# Pacotes utilizados no projeto
+suppressMessages(library(tidyverse))
+suppressMessages(library(summarytools))
+suppressMessages(library(corrplot))
+suppressMessages(library(car))
+suppressMessages(library(GGally))
+suppressMessages(library(effects))
+suppressMessages(library(performance))
+
+
+
+# Importação da base de dados
+df <- read.table("projeto.csv", header = T, sep = ";", dec = ",")
+
+# Renomeia colunas
+df <- df %>% 
+  rename(
+    comp_relat = X1, # Compacidade relativa
+    area_super = X2, # Área de superfície
+    area_pared = X3, # Área de paredes
+    area_cober = X4, # Área de cobertura
+    altu_total = X5, # Altura total
+    orie_sol   = X6, # Orientação em relação ao sol
+    area_envid = X7, # Área de envidraçamento
+    dist_area_envid   = X8, # Distribuição da área de envidraçamento
+    carga_aquecimento = Y1  # Carga de Aquecimento
+  )
+
+# Estrutura dos dados
+str(df)
+```
+<hr>
+
+
+## Estatísticas descritivas da base
+```{r warning=FALSE}
+summarytools::descr(df)
+```
+
+É possível observar que estamos trabalhando com uma base de dados que possui 768 registro e que todas elas são númericas, não sendo necessária nenhuma transformação prévia.
+<hr>
+
+# Ajuste e seleção de modelos:Selecionando covariáveis
+
+## Análise de correlação da variáveis
+```{r warning=FALSE}
+cor <-  cor(df)
+corrplot(cor, method="color", type='lower', addCoef.col = "black")
+```
+
+É possível observar pela matriz de correlação que as váriveis orien_sol, area_envid e dist_area_envid não possui correlação com as demais variáveis. Por outro lado, comp_relat e area_super possuem alta correlação (positiva e negativa) com quase todas as demais variáveis, exceto a area_pared, o que pode indicar a presença de  multicolinearidade. Vou manter todas as variáveis e fazer algumas análises complementares antes de decidir pela exclusão de qualquer variável.
+<hr>
+
+## Distribuição das variáveis
+```{r warning=FALSE}
+df_long <- df %>%
+  pivot_longer(cols = -carga_aquecimento,
+               names_to = "variable",
+               values_to = "value")
+
+# Plot de cada variável explicativa pela variável de interesse
+ggplot(data = df_long,
+       mapping = aes(x = value, y = carga_aquecimento)) +
+  facet_wrap(facets = ~variable, scale = "free_x") +
+  geom_point() +
+  geom_smooth(method = "lm")+
+  theme_bw()
+
+# Histograma de todas as variáveis
+df_long %>%
+  ggplot(aes(value)) +
+  facet_wrap(~ variable, scales = "free") +
+  geom_histogram()+
+  theme_bw()
+```
+Com base nos gráficos acima é possível observar alguns fatos sobre cada uma das variáveis, tanto individualmente quanto relativamente a variávei de interesse:
+    
+* Compacidade relativa (comp_relat): Apresenta relação positiva com a variável de interesse.
+
+* Área de superfície (area_super): Apresenta relação negativa com a variável de interesse e possui uma distribuição igualitária entre os possíveis valores que pode assumir.
+
+* Área de paredes (area_pared): Possui distribuição próxima da normal e apresenta relação positiva com a variável de interesse.
+
+* Área de cobertura (area_cober): Possui relação negativa com a variável de interesse, ou seja, quanto maior a área de cobertura, menor é a necessidade de carga de aquecimento. 
+
+* Altura total (altu_total): Possui apenas dois valores possíveis (3 e 7), o que me parece indicar que possuimos apenas edifícios com 2 tipos de altura. A variável apresenta relação positiva com a variável de interesse e não apresenta desbalancemanto.
+
+* Orientação em relação ao sol (orie_sol): Não possui desbalanceamento estre os labels (2,3,4 e 5). No entante, pela distribuição e pelos valores que acada amostra pode receber, e na ausência de um dicinário de dados para confirmar, vou assumir que é uma variável categórica. Por isso, faremos a conversão dos dados de número inteiros para fatores não ordenados.
+
+* Área de envidraçamento (area_envid): Não possui desbalanceamento estre os valores que pode assumir e aprensenta uma relação levemente positiva com a variável de interesse.
+
+* Distribuição da área de envidraçamento (dist_area_envid): Não possui desbalanceamento estre os labels, porém parece possuir pouca influência sobre a variável de interesse.
+
+```{r warning=FALSE}
+# Tranformação da variável númerico para categórica
+df$orie_sol <- as.factor(df$orie_sol )
+```
+
+
+Por fim, vamos análise se há outliers na variável de interesse:
+
+```{r warning=FALSE}
+ggplot(df, aes(x=" ", y=carga_aquecimento)) +
+  geom_boxplot(fill='#006699', color="grey70")+
+  theme_classic()+
+  labs(
+        x = " ",
+        y = "Carga de Aquecimento",
+        title = "Boxplot da variávels de interesse: Carga de Aquecimento"
+    )
+```
+
+Não foi possível encontrar outliers pelo Boxplot.
+
+<hr>
+## Fit do modelo para observar a importância das variáveis e análise dos resíduos
+
+```{r warning=FALSE}
+m0 <- lm(carga_aquecimento ~ 
+           comp_relat+
+           area_super+
+           area_pared+
+           area_cober+
+           altu_total+
+           orie_sol+
+           area_envid+
+           dist_area_envid, data = df)
+summary(m0)
+```
+
+Abaixo, faça uma breve análise dos principais componentes da regressão:
+
+* **Resíduos:** A mediana dos resíduos está próxima de zero, o que pode indicar que o modelo está acertando simétricamente, ou seja, em ambos os extremos da distribuição da variável de interesse.
+
+* **Coeficientes:** Os coeficientes apontam que as variáveis *area_cober* e *orie_sol* (tratada como variável dummy) não são significativas para explicar a variável de interesse. Somada as análises da matriz de correlação e da distribuição das variáveis e suas relações com a variável de interesse, de fato são atributos que devem ser retirados da regressão, devido a baixa explicabilidade da variável de interesse e por causarem ruidos na regressão.
+
+* **Resíduo padrão:** Possui valor de *2,938*, o que indica que a diferença dos valores preditos não estão a uma distância muito grande do valor real. Mas acredito que podemos melhorar com a retirada das variáveis não significantes citadas acima.
+
+* **$R^{2}$:** Indica uma boa explicabilidade de, ao nível de 91,6%. Mas acredito que também será melhorado com a exclusão das variáveis pouco significatívas.
+
+* **F-statistic:** O p-valor menor que 0,05 indica que pelo menos uma da variáveis do modelo tem poder de explicabilidade da variável de interesse.
+
+
+Vamos estimar os coeficientes novamente, retirando as variáveis *area_cober* e *orie_sol* que não possuem significância estatística.
+
+
+```{r warning=FALSE}
+m1 <- lm(carga_aquecimento ~ 
+           comp_relat+
+           area_super+
+           area_pared+
+           #area_cober+
+           altu_total+
+           #orie_sol+
+           area_envid+
+           dist_area_envid, data = df)
+summary(m1)
+```
+
+
+Com a retirada de duas variáveis, o novo modelo teve uma pequena melhora no $R^{2}$ ajustado. No entanto apresenta baixa significância para a variável *dist_area_envid*. Vou retira-la também e realizar a análise novamente.
+
+```{r warning=FALSE}
+m2 <- lm(carga_aquecimento ~ 
+           comp_relat+
+           area_super+
+           area_pared+
+           #area_cober+
+           altu_total+
+           #orie_sol+
+           area_envid
+           #dist_area_envid+
+           , data = df)
+summary(m2)
+```
+
+Observa-se uma diminuição da mediana dos resíduo, demonstrando melhora na simetria dos acertos. O $R^{2}$ teve baixa variação, o que indica que podemos seguir com este modelo para uma análise mais detalhada dos resíduos. 
+
+```{r warning=FALSE}
+check_model(m2)
+```
+
+Observando o gráfico de Colinearidade, temos a análise da inflação da variância, que indica a presença ou não de multicolinearidade. As variáveis *comp_relat* e *area_super* estão acima do valor aceitável, o que é indicativo de inflação da variância, ou em outras palavras, multicolinearidade. Outra sinal de multicolineridade das variáveis é o erro padrão dos parâmetros estimados. É possível observar que tanto para o intercepto quanto para a variável *comp_relat*, apresentam erros elevados, quando comparados com os demais.
+
+Vamos remover a variável *area_super*, que possui o maior VIF, para ver como o modelo responde:
+
+```{r warning=FALSE}
+m3 <- lm(carga_aquecimento ~ 
+           comp_relat+
+           #area_super+
+           area_pared+
+           #area_cober+
+           altu_total+
+           #orie_sol+
+           area_envid
+           #dist_area_envid+
+           , data = df)
+summary(m3)
+
+check_model(m3)
+```
+
+Agora, com a ausência de multicolinearidade, tanto o erro padrão dos parâmetros quanto o VIF, diminuiram, ao custo de uma pequena variação do valor do $R^{2}$ e da mediana dos resíduos.
+
+
+Observando os gráficos de análise de resíduos, nos chama a atenção o *Normal Q-Q*, que representa a suposição de normalidade dos resíduos. Parece haver alguns registros nas caudas fora da normalidade. Podemos então verificar a presença ou não de normalidade dos resíduos para cada variável explicativa, a fim de entender se temos alguma variável impactando demais na normalidade dos erros.
+ 
+```{r warning=FALSE}
+# Multicolinearidade.
+car::residualPlots(m3)
+```
+Neste caso, assume-se normalidade nos resíduos para cada variável quando a linha azul está mais semelhante a linha pontilhada preta. Dessa forma, observando os gráficos acima, as variáveis explicativas se adequam bem no quesito normalidade.
+
+Outro teste interessante é o de fator de influência de cada variável. Podemos observar nos gráficos abaixo que a pela distância de Cook e dos resíduos normalizados, que algumas variáveis se sobressaem, o que podem indicar que possuem um impacto desproporcional na regressão. Vamos análisar o valor de *dffit* também para podermos selecionar algumas observações da tabela para retirar e testar novamente a regressão.
+
+```{r}
+#car::influencePlot(m3)
+car::influenceIndexPlot(m3)
+```
+
+
+```{r}
+im <- influence.measures(m3)
+summary(im)
+```
+ 
+Vou eliminar os top 5 registro com maiores *dffit* (que inclui alguns registros que é possível observar nos gráficos de distânciad e cook e dos resíduos normalizados), ou seja, que aprensentam influência significativa na regressão e rodar novamente para ver se temos alguma melhora no modelo.
+
+```{r warning=FALSE}
+m4 <- lm(carga_aquecimento ~ 
+           comp_relat+
+           #area_super+
+           area_pared+
+           #area_cober+
+           altu_total+
+           #orie_sol+
+           area_envid
+           #dist_area_envid+
+           , data = df[-c(1,2,3,4,16),])
+summary(m4)
+
+check_model(m4)
+```
+É possível observar uma pequena melhora na mediana dos resíduos, no erro padrão dos estimadores e no $R^{2}$, mantendo a significância de todos os parâmetros ajustados. Por isso, vamos seguir com o modelo *m4*.
+
+<hr>
+
+
+# Diagnóstico do modelo
+
+- **Normalidade (shapiro-wilk)**
+
+```{r}
+res_m4 <- m4$residuals
+
+shapiro.test(res_m4)
+```
+Verificando os resíduos de modelo, utilizando a o teste de Shapiro-Wilk, rejeitamos a hipótese nula de que há normalidade na amostra. Isso pode acontecer por termos poucas variáveis no modelo e que talvez outras variáveis não captadas possam contribuir para a normalidade.
+
+- **Independência**
+
+Assumimos como pressuposto que os dados foram coletados independentemente.
+
+- **Homogeneidade/Heretocedasticidade (Breush-Pagan)**
+Vamos validar se a variância dos resíduos são constantes. 
+```{r warning=FALSE}
+ncvTest(m4)
+```
+Devido ao p-valor baixo, o teste indica que não podemos assumir a hipótese nula que de a variância dos resíduos são constantes. Da mesma forma que o teste de normalidade, isso pode acontecer por termos poucas variáveis no modelo e que talvez outras variáveis não captadas possam contribuir para a variância constante dos resíduos.
+
+
+<hr>
+# Interpretação dos componentes do modelo
+
+O ajuste da regressão nos indica seguinte função que generaliza o modelo:
+
+$$y = -13.7237+comp\_relat*-11.9659 + area\_pared*0.0369 + altu\_total*5.4976 + area\_envid*19.6791 $$
+É possível observar que a *Compacidade Relativa* possui relação negativa com a carga de aquecimento. A compacidade relativa determina o "mede a relação entre as paredes da fachada do edifício e sua superfície, definindo uma relação percentual com o perímetro de um círculo de igual área e o perímetro das paredes exteriores." (Marcos, 2019) Dessa forma, faz sentido que quanto maior o índice, menor é a necessidade de carga de aquecimento.
+
+Para a variável *Área de Paredes*, possui impacto postivo sobre a demanda de carga de aquecimento, uma vez que quando maior a área, maior a necessidade de aqucimento. No entanto, o impacto por mais que seja signicante, possui um parâmetro de valor baixo.
+
+Para a *Altura Total*, o impacto é positivo, uma vez que quando maior a altura do edificio, maior a necessidade de carga de aquecimento. 
+
+Por fim, a *Área de Envidraçamento* impacta positivamente no modelo, pois quanto maior a área de envidraçãmento, maior é a necessidade de demanda de carga de aquecimento, uma vez que o vidro não mantém a temperatura do ambiente tão bem quanto outros materiais mais eficiêntes nesse sentido.
+
+Todos os parâmetros possuem baixa erro padrão e signifância estatística.
+
+<hr>
+# Avaliação do ajuste geral do modelo.
+
+O modelo se comparta bem, pois tem um $R^{2}$ de *91%* que garante a explicabilidade do modelo. Além disso, foram realizados ajustes finos que impactaram:
+- Diminuição os impactos da multicolinearidade;
+- Diminuição do impacto de observações com forte influência sobre os resíduos;
+- Garantia da significância estatística dos parâmetros;
+- Diminuição dos erros padrão dos estimadores;
+- Diminuição dos da mediana dos resíduos.
+
+No entanto, algumas métricas ainda precisam ser melhoradas, talvez com algumas tranformações dos dados ou com a inclusão de mais variáveis explicativas. Algumas dessa métricas são:
+
+- AIC e BIC: Apesar e uma molhora desses indicares quando comparamos m0 e m4, acretido que eles podem ser otimizadas para diminuirem a complexidade do modelo, via processo de stepwise.
+
+```{r}
+AIC_m0 <- AIC(m0)
+BIC_m0 <- BIC(m0)
+AIC_m4 <- AIC(m4)
+BIC_m4 <- BIC(m4)
+
+AIC <- data.frame(AIC_m0,AIC_m4)
+BIC <- data.frame(BIC_m0,BIC_m4)
+
+knitr::kable(list(BIC,AIC))
+```
+
+
+- MSE: Apesar dos ajustes citados no inicio desta seção, o erro médio do modelo inicial *m0* foi um pouco menor que o do modelo final *m4*.
+
+```{r}
+
+
+MSE_m0 <- data.frame(m0 = mean(m0$residuals^2))
+MSE_m4 <- data.frame(m4 = mean(m4$residuals^2))
+knitr::kable(list(MSE_m0, MSE_m4), align = 'c')
+```
+
+
+<hr>
+# Predict do modelo
+
+Abaixo apresente 3 configurações de predios e calculo as predições da carga de aquecimento necessária para cada edíficio.
+
+```{r}
+teste <- data.frame(comp_relat = c(0.7,0.8,0.9),
+                    area_pared = c(285,270,290),
+                    altu_total = c(7,3.5,7),
+                    area_envid = c(0.1,0,0.1))
+predict(m4, teste)
+```
+Os ajustes me parecem fazer sentido, dado a combinação dos de cada um dos exemplos. As variáveis *altu_total* e *area_envid*, por exemplo, são menores para a segunda observação, o que indica uma necessidade menor de carga de aquecimento, o que de fato é expressa nos dados.
+
+Abaixo, apresento também o intervalo de confiança e o de predição das amostras criadas.
+
+- Intervalo de Confiança:
+```{r}
+predict(m4, newdata = teste, se.fit = TRUE, interval = c("confidence"))
+```
+
+- Intervalo de Predição:
+```{r}
+predict(m4, newdata = teste, se.fit = TRUE, interval = c("prediction"))
+```
+O intervalo de confiança, ao nível de 95%, parece bem rezoavel na predição das amostras, com uma distância média muito próxima do erro. No intervalo de predição, apesar da expanção do intervalo, a predição também tem um bom desempenho.
+
+<hr>
+
+
+# Conclusão
+
+Por fim, o modelo proposto possui utilidade e acredito que poderia ser utilizado para recomendações de carga de aquecimento de novos edificios. Os ajustes realizaddos garantiram uma explicabilidade da variável de interesse com um nível significativo. Existem algumas melhorias que ainda podem ser feitas, conforme citadas acima, que podem melhorar ainda mais a performance do modelo. 
+
+Gostaria de deixar registado que este projeto me ajudou muito a comprender melhor o processo de ajuste de um modelo de regressão. Pude aplicar diversos conceitos estatísticos vistos em aula e entender melhor o grau de complexidade na composição de um modelo completo.
+
+<hr>
+# Referências
+
+- Thieme, C. Understanding Linear Regression Output in R. [link](https://towardsdatascience.com/understanding-linear-regression-output-in-r-7a9cbda948b3). Acessado em 14/07/2021.
+- Yihui Xie, J. J. Allaire, Garrett Grolemund. R Markdown: The Definitive Guide. [link](https://bookdown.org/yihui/rmarkdown/html-document.html#table-of-contents). 
+- A. Kassambara. [link](http://www.sthda.com/english/)
+- Marcos. Arquitetura Economica: Indice de Compacidade.[link](https://arquiteturam.wixsite.com/arqm/post/arquitetura-econ%C3%B4mica-%C3%ADndice-de-compacida)de. Acessado em 14/07/2021
